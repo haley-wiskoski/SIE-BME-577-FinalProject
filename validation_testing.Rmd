@@ -1,0 +1,278 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+install.packages("anytime")
+install.packages("shiny")
+install.packages("eeptools")
+install.packages("shinythemes")
+install.packages("shinyWidgets")
+library("anytime")
+library("shiny")
+library(dplyr)
+library(stringr)
+library(eeptools)
+library(shinythemes)
+library(shinyWidgets)
+```
+
+```{r}
+# Ingesting raw data 
+patients <- read.csv("patients.csv")
+encounters <- read.csv("Encounter.csv") #Randomized base cost already integrated into Encounter.csv
+payers <- read.csv("payers.csv")
+  
+# Combining "patients" and "encounters"
+combined <- right_join(patients, encounters, by=c("Id" = "PATIENT"), copy = FALSE, keep = FALSE, na_matches = "na")
+
+# Combining "payers" to the intersection of "payers" and "encounters"
+combined_payers <- right_join(combined, payers, by=c("PAYER" = "Id"), copy = FALSE, keep = FALSE, na_matches = "na")
+```
+
+```{r}
+# Removing unnecessary columns
+combined_payers <- subset(combined_payers, select = -c(ADDRESS.y:MEMBER_MONTHS, SSN:PASSPORT, CITY.x, STATE))
+combined_payers <- subset(combined_payers, select = -c(LAT, LON, LAST:MARITAL, BIRTHPLACE, ADDRESS.x, ZIP.x:PROVIDER, TOTAL_CLAIM_COST, ETHNICITY))
+
+#Changes the name of the column from name to PAYER_NAME
+colnames(combined_payers)[which(names(combined_payers) == 'NAME')] <- 'PAYER_NAME'
+
+# Change reason code column to be the new cost after insurance column
+colnames(combined_payers)[which(names(combined_payers) == 'REASONCODE')] <- 'AFTER_INSURANCE'
+
+# Making no-insurance designation consistent along with fixing titles on data set itself
+for(i in 1:length(combined_payers$BIRTHDATE)){
+  if (combined_payers$PAYER_NAME[i] == "NO_INSURANCE"){
+    combined_payers$PAYER_NAME[i] = "No Insurance"
+  }
+  if (combined_payers$ENCOUNTERCLASS[i] == "urgentcare"){
+    combined_payers$ENCOUNTERCLASS[i] = "Urgent Care"
+  } 
+  if (combined_payers$GENDER[i] == "M"){
+    combined_payers$GENDER[i] = "Male"
+  }
+  if (combined_payers$GENDER[i] == "F"){
+    combined_payers$GENDER[i] = "Female"
+  }
+}
+  
+for(i in 1:length(combined_payers$BIRTHDATE)){ 
+  combined_payers$AFTER_INSURANCE[i] = combined_payers$BASE_ENCOUNTER_COST[i] - combined_payers$PAYER_COVERAGE[i] # Calculate a column for the estimated cost after insurance
+  
+  combined_payers$ENCOUNTERCLASS[i] = str_to_title(combined_payers$ENCOUNTERCLASS[i]) #Capitalize encounter classes to make UI look good
+  combined_payers$RACE[i] = str_to_title(combined_payers$RACE[i])
+  combined_payers$DESCRIPTION[i] = str_to_title(combined_payers$DESCRIPTION[i])
+  combined_payers$PAYER_NAME[i] = str_to_title(combined_payers$PAYER_NAME[i])
+}
+```
+
+```{r}
+# Change prefix column to be the new age column
+colnames(combined_payers)[which(names(combined_payers) == 'PREFIX')] <- 'AGE'
+
+# Set today's date
+Todays_Date = as.Date(anydate("2024-01-01"))
+
+for(i in 1:length(combined_payers$BIRTHDATE)){
+  Pat_Birth_Date = anydate(combined_payers$BIRTHDATE[i])
+  #Pat_Birth_Date = (combined_payers$BIRTHDATE[i])
+  
+  # Patients without death date (alive)
+  if (combined_payers$DEATHDATE[i] == ""){
+    Age = floor(age_calc(Pat_Birth_Date, enddate = Todays_Date, units = "years"))
+    combined_payers$AGE[i] = Age
+  
+  # Patients with death date  
+  } else { 
+    Death_Date = anydate(combined_payers$DEATHDATE[i])
+    #Death_Date = (combined_payers$DEATHDATE[i])
+    Age = floor(age_calc(Pat_Birth_Date, enddate = Death_Date, units = "years"))
+    combined_payers$AGE[i] = Age
+  }
+}
+```
+
+```{r}
+# Redefining the "FIRST" column to be the new "AGECLASS" column
+colnames(combined_payers)[which(names(combined_payers) == 'FIRST')] <- 'AGECLASS'
+
+for(i in 1:length(combined_payers$AGE)){
+  Pat_Age = combined_payers$AGE[i]
+  
+  if (Pat_Age < 20) {
+    combined_payers$AGECLASS[i] = "0-20"
+  }
+    else if (Pat_Age >= 20 && Pat_Age < 30){
+      combined_payers$AGECLASS[i] = "20-29"
+    }
+  
+   else if (Pat_Age >= 30 && Pat_Age < 40){
+      combined_payers$AGECLASS[i] = "30-39"
+   }
+  
+   else if (Pat_Age >= 40 && Pat_Age < 50){
+      combined_payers$AGECLASS[i] = "40-49"
+   }
+  
+   else if (Pat_Age >= 50 && Pat_Age < 60){
+      combined_payers$AGECLASS[i] = "50-59"
+   }
+   else if (Pat_Age >= 60 && Pat_Age < 70){
+      combined_payers$AGECLASS[i] = "60-69"
+  }
+
+   else if (Pat_Age >= 70 && Pat_Age < 80){
+      combined_payers$AGECLASS[i] = "70-79"
+  }
+  
+   else if (Pat_Age >= 80){
+      combined_payers$AGECLASS[i] = "80+"
+  }
+}
+
+```
+
+```{r}
+Locations = unique(combined_payers$COUNTY)
+Genders = unique(combined_payers$GENDER)
+Races = str_to_title(unique(combined_payers$RACE))
+Encounter_Types = unique(combined_payers$ENCOUNTERCLASS)
+Insurance_Types = str_to_title(unique(combined_payers$PAYER_NAME))
+Ages = str_sort(unique(combined_payers$AGECLASS))
+Compare_By = c("Location", "Gender", "Age", "Race", "Encounter Class", "Visit Type", "Insurance")
+Visit_Types = str_to_title(unique(combined_payers$DESCRIPTION))
+```
+
+```{r}
+for (i in 1:length(Encounter_Types)){
+
+  current = unique(subset(combined_payers, ENCOUNTERCLASS==Encounter_Types[i],select=c("ENCOUNTERCLASS","DESCRIPTION")))
+
+  if (Encounter_Types[i]== "Ambulatory"){
+    Ambulatory_VT = current$DESCRIPTION
+  }
+  
+  else if (Encounter_Types[i]== "Wellness"){
+    Wellness_VT = current$DESCRIPTION
+  }
+  
+   else if (Encounter_Types[i]== "Inpatient"){
+    Inpatient_VT = current$DESCRIPTION
+   }
+  
+   else if (Encounter_Types[i]== "Urgent Care"){
+    UrgentCare_VT = current$DESCRIPTION
+   }
+  
+  else if (Encounter_Types[i]== "Outpatient"){
+    Outpatient_VT = current$DESCRIPTION
+  }
+  
+  else if (Encounter_Types[i]== "Emergency"){
+    Emergency_VT = current$DESCRIPTION
+  }
+
+  }
+
+```
+
+# VERIFICATION TESTING 
+```{r}
+# USER INPUTS ----------------------------------------------------------------
+
+count = "Plymouth County" #LOCATION
+g = "Female" #GENDER
+age = "40-49" #AGE CLASS
+race = "White" #RACE
+enc = "Ambulatory" #ENCOUNTER CLASS
+vis = "Encounter For Symptom" #VISIT REASON
+ins = "Aetna" #INSURANCE COMPANY
+Compare_By = "Location"
+
+# VERIFICATION OF COMPARISON GRAPH--------------------------------------------
+# If filtering by Location...
+if (Compare_By != "Location" & count != "All"){
+  filtered_df <- subset(combined_payers, COUNTY == count)
+  df1 <- filtered_df #update usable df for next if
+} else (df1 <- combined_payers) #if no filtering, keep same df
+
+if (Compare_By != "Gender" & g != "All"){
+  filtered_df <- subset(df1, GENDER == g)
+  df2 <- filtered_df #update usable df for next if
+} else {df2 <- df1} #if no filtering, keep same df
+
+if (Compare_By != "Age" & age != "All"){
+  filtered_df <- subset(df2, AGECLASS == age)
+  df3 <- filtered_df #update usable df for next if
+} else {df3 <- df2} #if no filtering, keep same df
+
+if (Compare_By != "Race" & race != "All"){
+  filtered_df <- subset(df3, RACE == race)
+  df4 <- filtered_df #update usable df for next if
+} else {df4 <- df3} #if no filtering, keep same df
+
+if (Compare_By != "Encounter Class" & enc != "All"){
+  filtered_df <- subset(df4, ENCOUNTERCLASS == enc)
+  df5 <- filtered_df #update usable df for next if
+} else {df5 <- df4} #if no filtering, keep same df
+
+if (Compare_By != "Visit Type" & ins != "All"){
+  filtered_df <- subset(df5, PAYER_NAME == ins)
+  df6 <- filtered_df #update usable df for next if
+} else {df6 <- df5} #if no filtering, keep same df
+
+if (Compare_By != "Insurance" & vis != "All"){
+  filtered_df <- subset(df6, DESCRIPTION == vis)
+  df7 <- filtered_df #update usable df for next if
+} else {df7 <- df6} #if no filtering, keep same df
+
+# Change the group_by input below to match CompareBy!!!!!!!!!
+BC_validation <- df7 %>% group_by(COUNTY) %>% summarise(Base_Cost =mean(BASE_ENCOUNTER_COST))
+OOP_validation <- df7 %>% group_by(COUNTY) %>% summarise(OOP_Cost =mean(AFTER_INSURANCE))
+
+
+# VERIFICATION OF COST ESTIMATIONS ---------------------------------------------
+if (count != "All"){
+  filtered_df <- subset(combined_payers, COUNTY == count)
+  df1 <- filtered_df #update usable df for next if
+} else (df1 <- combined_payers) #if no filtering, keep same df
+
+if (g != "All"){
+  filtered_df <- subset(df1, GENDER == g)
+  df2 <- filtered_df #update usable df for next if
+} else {df2 <- df1} #if no filtering, keep same df
+
+if (age != "All"){
+  filtered_df <- subset(df2, AGECLASS == age)
+  df3 <- filtered_df #update usable df for next if
+} else {df3 <- df2} #if no filtering, keep same df
+
+if (race != "All"){
+  filtered_df <- subset(df3, RACE == race)
+  df4 <- filtered_df #update usable df for next if
+} else {df4 <- df3} #if no filtering, keep same df
+
+if (enc != "All"){
+  filtered_df <- subset(df4, ENCOUNTERCLASS == enc)
+  df5 <- filtered_df #update usable df for next if
+} else {df5 <- df4} #if no filtering, keep same df
+
+if (ins != "All"){
+  filtered_df <- subset(df5, PAYER_NAME == ins)
+  df6 <- filtered_df #update usable df for next if
+} else {df6 <- df5} #if no filtering, keep same df
+
+if (vis != "All"){
+  filtered_df <- subset(df6, DESCRIPTION == vis)
+  df7 <- filtered_df #update usable df for next if
+} else {df7 <- df6} #if no filtering, keep same df
+
+
+BC <- summarise(df7, Base_Cost =mean(BASE_ENCOUNTER_COST))
+OOP <- summarise(df7, OOP_Cost =mean(AFTER_INSURANCE))
+```
+
